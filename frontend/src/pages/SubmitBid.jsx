@@ -300,7 +300,7 @@ function SubmitBid() {
                         marginTop: '8px'
                     }}
                 >
-                    {submitting ? 'Submitting...' : '🚀 Submit Bid'}
+                    {submitting ? 'Submitting...' : 'Submit Bid'}
                 </button>
             </form>
         </div>
