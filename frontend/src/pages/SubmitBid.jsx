@@ -60,7 +60,7 @@ function SubmitBid() {
             const res = await API.post('/bids/submit', payload);
 
             const newCloseTime = new Date(res.data.current_bid_close_time).toLocaleString();
-            setSuccess(`✅ Bid submitted! Current close time: ${newCloseTime}`);
+            setSuccess(` Bid submitted! Current close time: ${newCloseTime}`);
 
             // Reset form
             setForm({
@@ -132,7 +132,7 @@ function SubmitBid() {
                     borderRadius: '6px',
                     marginBottom: '16px'
                 }}>
-                    ❌ {error}
+                     {error}
                 </div>
             )}
 
