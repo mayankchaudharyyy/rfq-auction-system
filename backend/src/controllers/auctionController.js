@@ -1,34 +1,50 @@
-const db = require('../config/db');
+const RFQ = require('../models/RFQ');
+const AuctionLog = require('../models/AuctionLog');
+const Bid = require('../models/Bid');
+
+function emitAuctionUpdate(req, rfqId, event, payload = {}) {
+    const io = req.app.get('io');
+    if (io) {
+        io.to(`rfq:${rfqId}`).emit(event, { rfq_id: rfqId, ...payload });
+        io.emit('auction_list_updated', { rfq_id: rfqId, ...payload });
+    }
+}
+
+function assertBuyerOwnsRFQ(req, rfq) {
+    return rfq.buyer_id.toString() === req.user._id.toString();
+}
 
 // POST /api/auctions/activate/:rfq_id
 async function activateAuction(req, res) {
     try {
         const { rfq_id } = req.params;
 
-        const [rfqs] = await db.query(
-            'SELECT * FROM rfqs WHERE id = ?', [rfq_id]
-        );
+        const rfq = await RFQ.findById(rfq_id);
 
-        if (rfqs.length === 0) {
+        if (!rfq) {
             return res.status(404).json({ error: 'RFQ not found' });
         }
 
-        if (rfqs[0].status !== 'draft') {
-            return res.status(400).json({ error: `RFQ is already ${rfqs[0].status}` });
+        if (!assertBuyerOwnsRFQ(req, rfq)) {
+            return res.status(403).json({ error: 'You can only manage auctions for your own RFQs.' });
         }
 
-        await db.query(
-            'UPDATE rfqs SET status = ? WHERE id = ?',
-            ['active', rfq_id]
-        );
+        if (rfq.status !== 'draft') {
+            return res.status(400).json({ error: `RFQ is already ${rfq.status}` });
+        }
 
-        await db.query(
-            `INSERT INTO auction_logs (rfq_id, event_type, description)
-             VALUES (?, 'bid_submitted', 'Auction activated by buyer')`,
-            [rfq_id]
-        );
+        rfq.status = 'active';
+        await rfq.save();
 
-        return res.json({ message: 'Auction activated successfully' });
+        await AuctionLog.create({
+            rfq_id: rfq._id,
+            event_type: 'bid_submitted',
+            description: 'Auction activated by buyer'
+        });
+
+        emitAuctionUpdate(req, rfq_id, 'auction_status_changed', { status: rfq.status });
+
+        return res.json({ message: 'Auction activated successfully', rfq });
 
     } catch (error) {
         console.error('activateAuction error:', error);
@@ -41,30 +57,32 @@ async function closeAuction(req, res) {
     try {
         const { rfq_id } = req.params;
 
-        const [rfqs] = await db.query(
-            'SELECT * FROM rfqs WHERE id = ?', [rfq_id]
-        );
+        const rfq = await RFQ.findById(rfq_id);
 
-        if (rfqs.length === 0) {
+        if (!rfq) {
             return res.status(404).json({ error: 'RFQ not found' });
         }
 
-        if (rfqs[0].status === 'closed' || rfqs[0].status === 'force_closed') {
+        if (!assertBuyerOwnsRFQ(req, rfq)) {
+            return res.status(403).json({ error: 'You can only manage auctions for your own RFQs.' });
+        }
+
+        if (rfq.status === 'closed' || rfq.status === 'force_closed') {
             return res.status(400).json({ error: 'Auction is already closed' });
         }
 
-        await db.query(
-            'UPDATE rfqs SET status = ? WHERE id = ?',
-            ['closed', rfq_id]
-        );
+        rfq.status = 'closed';
+        await rfq.save();
 
-        await db.query(
-            `INSERT INTO auction_logs (rfq_id, event_type, description)
-             VALUES (?, 'auction_closed', 'Auction manually closed by buyer')`,
-            [rfq_id]
-        );
+        await AuctionLog.create({
+            rfq_id: rfq._id,
+            event_type: 'auction_closed',
+            description: 'Auction manually closed by buyer'
+        });
 
-        return res.json({ message: 'Auction closed successfully' });
+        emitAuctionUpdate(req, rfq_id, 'auction_status_changed', { status: rfq.status });
+
+        return res.json({ message: 'Auction closed successfully', rfq });
 
     } catch (error) {
         console.error('closeAuction error:', error);
@@ -78,15 +96,16 @@ async function checkAndUpdateStatus(req, res) {
     try {
         const { rfq_id } = req.params;
 
-        const [rfqs] = await db.query(
-            'SELECT * FROM rfqs WHERE id = ?', [rfq_id]
-        );
+        const rfq = await RFQ.findById(rfq_id);
 
-        if (rfqs.length === 0) {
+        if (!rfq) {
             return res.status(404).json({ error: 'RFQ not found' });
         }
 
-        const rfq = rfqs[0];
+        if (req.user.role === 'buyer' && !assertBuyerOwnsRFQ(req, rfq)) {
+            return res.status(403).json({ error: 'You can only check auctions for your own RFQs.' });
+        }
+
         const now = new Date();
 
         if (rfq.status !== 'active') {
@@ -98,29 +117,29 @@ async function checkAndUpdateStatus(req, res) {
 
         // Force close if past forced close time
         if (now >= forcedCloseTime) {
-            await db.query(
-                'UPDATE rfqs SET status = ? WHERE id = ?',
-                ['force_closed', rfq_id]
-            );
-            await db.query(
-                `INSERT INTO auction_logs (rfq_id, event_type, description)
-                 VALUES (?, 'force_closed', 'Auction force closed - reached forced close time')`,
-                [rfq_id]
-            );
+            rfq.status = 'force_closed';
+            await rfq.save();
+
+            await AuctionLog.create({
+                rfq_id: rfq._id,
+                event_type: 'force_closed',
+                description: 'Auction force closed - reached forced close time'
+            });
+            emitAuctionUpdate(req, rfq_id, 'auction_status_changed', { status: rfq.status });
             return res.json({ status: 'force_closed', message: 'Auction force closed' });
         }
 
         // Normal close if past bid close time
         if (now >= bidCloseTime) {
-            await db.query(
-                'UPDATE rfqs SET status = ? WHERE id = ?',
-                ['closed', rfq_id]
-            );
-            await db.query(
-                `INSERT INTO auction_logs (rfq_id, event_type, description)
-                 VALUES (?, 'auction_closed', 'Auction closed - reached bid close time')`,
-                [rfq_id]
-            );
+            rfq.status = 'closed';
+            await rfq.save();
+
+            await AuctionLog.create({
+                rfq_id: rfq._id,
+                event_type: 'auction_closed',
+                description: 'Auction closed - reached bid close time'
+            });
+            emitAuctionUpdate(req, rfq_id, 'auction_status_changed', { status: rfq.status });
             return res.json({ status: 'closed', message: 'Auction closed' });
         }
 
@@ -138,25 +157,45 @@ async function checkAndUpdateStatus(req, res) {
     }
 }
 
-// GET /api/auctions/listing
-async function getAuctionListing(req, res) {
+// POST /api/auctions/select-winner/:rfq_id/:bid_id
+async function selectWinner(req, res) {
     try {
-        const [rows] = await db.query(
-            `SELECT 
-                r.id, r.reference_id, r.name, r.status,
-                r.bid_close_time, r.forced_close_time,
-                MIN(b.total_amount) as current_lowest_bid,
-                COUNT(b.id) as total_bids
-            FROM rfqs r
-            LEFT JOIN bids b ON b.rfq_id = r.id
-            GROUP BY r.id
-            ORDER BY r.created_at DESC`
-        );
+        const { rfq_id, bid_id } = req.params;
+        const rfq = await RFQ.findById(rfq_id);
 
-        return res.json(rows);
+        if (!rfq) {
+            return res.status(404).json({ error: 'RFQ not found' });
+        }
+
+        if (!assertBuyerOwnsRFQ(req, rfq)) {
+            return res.status(403).json({ error: 'You can only select winners for your own RFQs.' });
+        }
+
+        const bid = await Bid.findOne({ _id: bid_id, rfq_id });
+        if (!bid) {
+            return res.status(404).json({ error: 'Bid not found for this RFQ.' });
+        }
+
+        await Bid.updateMany({ rfq_id }, { winner: false });
+        bid.winner = true;
+        await bid.save();
+
+        rfq.status = 'closed';
+        await rfq.save();
+
+        await AuctionLog.create({
+            rfq_id,
+            event_type: 'winner_selected',
+            description: 'Buyer selected a winning supplier',
+            triggered_by_bid_id: bid._id
+        });
+
+        emitAuctionUpdate(req, rfq_id, 'winner_selected', { bid_id: bid._id, status: rfq.status });
+
+        return res.json({ message: 'Winner selected successfully', bid_id: bid._id, rfq });
 
     } catch (error) {
-        console.error('getAuctionListing error:', error);
+        console.error('selectWinner error:', error);
         return res.status(500).json({ error: 'Internal server error' });
     }
 }
@@ -165,5 +204,5 @@ module.exports = {
     activateAuction,
     closeAuction,
     checkAndUpdateStatus,
-    getAuctionListing
+    selectWinner
 };

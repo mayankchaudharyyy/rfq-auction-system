@@ -4,12 +4,15 @@ const {
     activateAuction,
     closeAuction,
     checkAndUpdateStatus,
-    getAuctionListing
+    selectWinner
 } = require('../controllers/auctionController');
+const { protect, restrictTo } = require('../middleware/auth');
 
-router.get('/listing', getAuctionListing);
-router.post('/activate/:rfq_id', activateAuction);
-router.post('/close/:rfq_id', closeAuction);
+router.use(protect);
+
+router.post('/activate/:rfq_id', restrictTo('buyer'), activateAuction);
+router.post('/close/:rfq_id', restrictTo('buyer'), closeAuction);
+router.post('/select-winner/:rfq_id/:bid_id', restrictTo('buyer'), selectWinner);
 router.post('/check-status/:rfq_id', checkAndUpdateStatus);
 
 module.exports = router;

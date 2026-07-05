@@ -1,21 +1,23 @@
-const db = require('../config/db');
+const RFQ = require('../models/RFQ');
+const AuctionLog = require('../models/AuctionLog');
+const { getRankedBids } = require('./bidController');
 
-// Generate a unique reference ID like RFQ-2026-001
+// Generate unique reference ID like RFQ-2026-001
 async function generateReferenceId() {
     const year = new Date().getFullYear();
-    const [rows] = await db.query(
-        'SELECT COUNT(*) as count FROM rfqs WHERE YEAR(created_at) = ?', [year]
-    );
-    const count = rows[0].count + 1;
-    return `RFQ-${year}-${String(count).padStart(3, '0')}`;
+    const startOfYear = new Date(year, 0, 1);
+    const endOfYear = new Date(year + 1, 0, 1);
+    const count = await RFQ.countDocuments({
+        created_at: { $gte: startOfYear, $lt: endOfYear }
+    });
+    return `RFQ-${year}-${String(count + 1).padStart(3, '0')}`;
 }
 
-// POST /api/rfqs/create
+// POST /api/rfqs/create  [buyer only]
 async function createRFQ(req, res) {
     try {
         const {
             name,
-            buyer_id,
             pickup_service_date,
             bid_start_time,
             bid_close_time,
@@ -25,125 +27,179 @@ async function createRFQ(req, res) {
             extension_trigger
         } = req.body;
 
-        // Validation
         if (new Date(forced_close_time) <= new Date(bid_close_time)) {
-            return res.status(400).json({
-                error: 'forced_close_time must be greater than bid_close_time'
-            });
+            return res.status(400).json({ error: 'Forced close time must be after bid close time.' });
         }
-
         if (new Date(bid_close_time) <= new Date(bid_start_time)) {
-            return res.status(400).json({
-                error: 'bid_close_time must be greater than bid_start_time'
-            });
+            return res.status(400).json({ error: 'Bid close time must be after bid start time.' });
         }
 
         const reference_id = await generateReferenceId();
 
-        // Insert RFQ
-        const [rfqResult] = await db.query(
-            `INSERT INTO rfqs 
-            (reference_id, name, buyer_id, pickup_service_date, bid_start_time, bid_close_time, forced_close_time, status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')`,
-            [reference_id, name, buyer_id, pickup_service_date, bid_start_time, bid_close_time, forced_close_time]
-        );
-
-        const rfq_id = rfqResult.insertId;
-
-        // Insert Auction Config
-        await db.query(
-            `INSERT INTO auction_configs 
-            (rfq_id, trigger_window_minutes, extension_duration_minutes, extension_trigger) 
-            VALUES (?, ?, ?, ?)`,
-            [rfq_id, trigger_window_minutes, extension_duration_minutes, extension_trigger]
-        );
-
-        return res.status(201).json({
-            message: 'RFQ created successfully',
-            rfq_id,
-            reference_id
+        const newRFQ = await RFQ.create({
+            reference_id,
+            name,
+            buyer_id: req.user._id,   // from JWT
+            pickup_service_date,
+            bid_start_time,
+            bid_close_time,
+            forced_close_time,
+            status: 'draft',
+            auction_config: {
+                trigger_window_minutes: Number(trigger_window_minutes),
+                extension_duration_minutes: Number(extension_duration_minutes),
+                extension_trigger
+            }
         });
 
+        return res.status(201).json({
+            message: 'RFQ created successfully.',
+            rfq_id: newRFQ._id,
+            reference_id
+        });
     } catch (error) {
         console.error('createRFQ error:', error);
-        return res.status(500).json({ error: 'Internal server error' });
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(e => e.message);
+            return res.status(400).json({ error: messages.join('. ') });
+        }
+        return res.status(500).json({ error: 'Internal server error.' });
     }
 }
 
-// GET /api/rfqs
-async function getAllRFQs(req, res) {
+// GET /api/rfqs/my  [buyer only — their own RFQs]
+async function getMyRFQs(req, res) {
     try {
-        const [rows] = await db.query(
-            `SELECT 
-                r.id, r.reference_id, r.name, r.status,
-                r.bid_close_time, r.forced_close_time,
-                MIN(b.total_amount) as current_lowest_bid
-            FROM rfqs r
-            LEFT JOIN bids b ON b.rfq_id = r.id
-            GROUP BY r.id
-            ORDER BY r.created_at DESC`
-        );
-
-        return res.json(rows);
+        const rfqs = await RFQ.aggregate([
+            { $match: { buyer_id: req.user._id } },
+            {
+                $lookup: {
+                    from: 'bids',
+                    localField: '_id',
+                    foreignField: 'rfq_id',
+                    as: 'bids'
+                }
+            },
+            {
+                $project: {
+                    id: '$_id',
+                    reference_id: 1,
+                    name: 1,
+                    status: 1,
+                    bid_start_time: 1,
+                    bid_close_time: 1,
+                    forced_close_time: 1,
+                    created_at: 1,
+                    current_lowest_bid: { $min: '$bids.total_amount' },
+                    total_bids: { $size: '$bids' }
+                }
+            },
+            { $sort: { created_at: -1 } }
+        ]);
+        return res.json(rfqs);
     } catch (error) {
-        console.error('getAllRFQs error:', error);
-        return res.status(500).json({ error: 'Internal server error' });
+        console.error('getMyRFQs error:', error);
+        return res.status(500).json({ error: 'Internal server error.' });
     }
 }
 
-// GET /api/rfqs/:id
+// GET /api/rfqs/active  [supplier only — active and closed RFQs visible to suppliers]
+async function getActiveRFQs(req, res) {
+    try {
+        const rfqs = await RFQ.aggregate([
+            { $match: { status: { $in: ['active', 'closed', 'force_closed'] } } },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'buyer_id',
+                    foreignField: '_id',
+                    as: 'buyer'
+                }
+            },
+            {
+                $lookup: {
+                    from: 'bids',
+                    localField: '_id',
+                    foreignField: 'rfq_id',
+                    as: 'bids'
+                }
+            },
+            {
+                $project: {
+                    id: '$_id',
+                    reference_id: 1,
+                    name: 1,
+                    status: 1,
+                    bid_start_time: 1,
+                    bid_close_time: 1,
+                    forced_close_time: 1,
+                    pickup_service_date: 1,
+                    created_at: 1,
+                    buyer_company: { $arrayElemAt: ['$buyer.company_name', 0] },
+                    total_bids: { $size: '$bids' },
+                    current_lowest_bid: { $min: '$bids.total_amount' },
+                    status_order: {
+                        $switch: {
+                            branches: [
+                                { case: { $eq: ['$status', 'active'] }, then: 1 },
+                                { case: { $eq: ['$status', 'closed'] }, then: 2 },
+                                { case: { $eq: ['$status', 'force_closed'] }, then: 3 }
+                            ],
+                            default: 4
+                        }
+                    }
+                }
+            },
+            { $sort: { status_order: 1, bid_close_time: 1 } },
+            { $project: { status_order: 0 } }
+        ]);
+        return res.json(rfqs);
+    } catch (error) {
+        console.error('getActiveRFQs error:', error);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+}
+
+// GET /api/rfqs/:id  [both roles]
 async function getRFQById(req, res) {
     try {
         const { id } = req.params;
+        const rfq = await RFQ.findById(id).populate('buyer_id', 'name company_name email');
 
-        // Get RFQ details
-        const [rfqs] = await db.query(
-            `SELECT r.*, u.name as buyer_name 
-             FROM rfqs r
-             JOIN users u ON u.id = r.buyer_id
-             WHERE r.id = ?`, [id]
-        );
-
-        if (rfqs.length === 0) {
-            return res.status(404).json({ error: 'RFQ not found' });
+        if (!rfq) {
+            return res.status(404).json({ error: 'RFQ not found.' });
         }
 
-        // Get auction config
-        const [configs] = await db.query(
-            'SELECT * FROM auction_configs WHERE rfq_id = ?', [id]
-        );
+        if (req.user.role === 'buyer' && rfq.buyer_id._id.toString() !== req.user._id.toString()) {
+            return res.status(403).json({ error: 'You can only view your own RFQs.' });
+        }
 
-        // Get all bids sorted by total_amount
-        const [bids] = await db.query(
-    `SELECT b.*, u.name as supplier_name,
-        RANK() OVER (ORDER BY b.total_amount ASC) as ranking
-    FROM bids b
-    JOIN users u ON u.id = b.supplier_id
-    WHERE b.rfq_id = ?
-    AND b.id IN (
-        SELECT MAX(id) FROM bids
-        WHERE rfq_id = ?
-        GROUP BY supplier_id
-    )
-    ORDER BY b.total_amount ASC`, [id, id]
-);
+        // Supplier can only view active/closed rfqs
+        if (req.user.role === 'supplier' && !['active', 'closed', 'force_closed'].includes(rfq.status)) {
+            return res.status(403).json({ error: 'This RFQ is not yet open for bidding.' });
+        }
 
-        // Get activity log
-        const [logs] = await db.query(
-            'SELECT * FROM auction_logs WHERE rfq_id = ? ORDER BY created_at ASC', [id]
-        );
+        const isBuyer = req.user.role === 'buyer';
+        const rankedBids = await getRankedBids(id, req.user);
+
+        const logs = await AuctionLog.find({ rfq_id: rfq._id }).sort({ created_at: 1 });
 
         return res.json({
-            rfq: rfqs[0],
-            auction_config: configs[0],
-            bids,
-            activity_log: logs
+            rfq: {
+                ...rfq.toObject(),
+                buyer_name: rfq.buyer_id ? rfq.buyer_id.company_name || rfq.buyer_id.name : 'Unknown',
+                buyer_email: rfq.buyer_id ? rfq.buyer_id.email : null
+            },
+            auction_config: rfq.auction_config,
+            bids: rankedBids,
+            activity_log: logs,
+            user_role: req.user.role,
+            is_buyer: isBuyer
         });
-
     } catch (error) {
         console.error('getRFQById error:', error);
-        return res.status(500).json({ error: 'Internal server error' });
+        return res.status(500).json({ error: 'Internal server error.' });
     }
 }
 
-module.exports = { createRFQ, getAllRFQs, getRFQById };
+module.exports = { createRFQ, getMyRFQs, getActiveRFQs, getRFQById };

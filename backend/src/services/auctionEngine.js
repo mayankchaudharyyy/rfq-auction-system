@@ -1,12 +1,13 @@
-const db = require('../config/db');
+const RFQ = require('../models/RFQ');
+const Bid = require('../models/Bid');
+const AuctionLog = require('../models/AuctionLog');
 
 async function processAuctionExtension(rfq_id, new_bid_id) {
     try {
         // Get RFQ details
-        const [rfqs] = await db.query(
-            'SELECT * FROM rfqs WHERE id = ?', [rfq_id]
-        );
-        const rfq = rfqs[0];
+        const rfq = await RFQ.findById(rfq_id);
+        
+        if (!rfq) return;
 
         // If auction is not active, do nothing
         if (rfq.status !== 'active') return;
@@ -17,23 +18,19 @@ async function processAuctionExtension(rfq_id, new_bid_id) {
 
         // If already past forced close time, force close and stop
         if (now >= forcedCloseTime) {
-            await db.query(
-                'UPDATE rfqs SET status = ? WHERE id = ?',
-                ['force_closed', rfq_id]
-            );
-            await db.query(
-                `INSERT INTO auction_logs (rfq_id, event_type, description)
-                 VALUES (?, 'force_closed', 'Auction force closed - reached forced close time')`,
-                [rfq_id]
-            );
+            rfq.status = 'force_closed';
+            await rfq.save();
+
+            await AuctionLog.create({
+                rfq_id,
+                event_type: 'force_closed',
+                description: 'Auction force closed - reached forced close time'
+            });
             return;
         }
 
-        // Get auction config
-        const [configs] = await db.query(
-            'SELECT * FROM auction_configs WHERE rfq_id = ?', [rfq_id]
-        );
-        const config = configs[0];
+        const config = rfq.auction_config;
+        if (!config) return;
 
         const triggerWindowMs = config.trigger_window_minutes * 60 * 1000;
         const extensionMs = config.extension_duration_minutes * 60 * 1000;
@@ -83,18 +80,18 @@ async function processAuctionExtension(rfq_id, new_bid_id) {
         const oldCloseTime = bidCloseTime;
 
         // Update bid_close_time in rfqs
-        await db.query(
-            'UPDATE rfqs SET bid_close_time = ? WHERE id = ?',
-            [newCloseTime, rfq_id]
-        );
+        rfq.bid_close_time = newCloseTime;
+        await rfq.save();
 
         // Log the extension
-        await db.query(
-            `INSERT INTO auction_logs 
-            (rfq_id, event_type, description, old_close_time, new_close_time, triggered_by_bid_id)
-            VALUES (?, 'time_extended', ?, ?, ?, ?)`,
-            [rfq_id, extensionReason, oldCloseTime, newCloseTime, new_bid_id]
-        );
+        await AuctionLog.create({
+            rfq_id,
+            event_type: 'time_extended',
+            description: extensionReason,
+            old_close_time: oldCloseTime,
+            new_close_time: newCloseTime,
+            triggered_by_bid_id: new_bid_id
+        });
 
         console.log(`Auction ${rfq_id} extended from ${oldCloseTime} to ${newCloseTime}`);
 
@@ -105,25 +102,17 @@ async function processAuctionExtension(rfq_id, new_bid_id) {
 
 // Check if any supplier ranking changed after new bid
 async function checkIfRankChanged(rfq_id, new_bid_id) {
-    // Get the new bid details
-    const [newBids] = await db.query(
-        'SELECT * FROM bids WHERE id = ?', [new_bid_id]
-    );
-    const newBid = newBids[0];
+    const newBid = await Bid.findById(new_bid_id);
+    if (!newBid) return false;
 
     // Count how many bids have lower total than this new bid
-    const [rows] = await db.query(
-        `SELECT COUNT(*) as count FROM bids 
-         WHERE rfq_id = ? AND total_amount < ? AND id != ?`,
-        [rfq_id, newBid.total_amount, new_bid_id]
-    );
+    const lowerCount = await Bid.countDocuments({
+        rfq_id,
+        total_amount: { $lt: newBid.total_amount },
+        _id: { $ne: newBid._id }
+    });
 
-    // If this bid is not last place, rankings changed
-    const totalBids = await db.query(
-        'SELECT COUNT(*) as count FROM bids WHERE rfq_id = ?', [rfq_id]
-    );
-    const total = totalBids[0][0].count;
-    const lowerCount = rows[0].count;
+    const total = await Bid.countDocuments({ rfq_id });
 
     // If new bid is not the highest price, it displaced someone = rank changed
     return lowerCount < total - 1;
@@ -131,24 +120,18 @@ async function checkIfRankChanged(rfq_id, new_bid_id) {
 
 // Check if L1 (lowest bidder) changed after new bid
 async function checkIfL1Changed(rfq_id, new_bid_id) {
-    // Get the new bid
-    const [newBids] = await db.query(
-        'SELECT * FROM bids WHERE id = ?', [new_bid_id]
-    );
-    const newBid = newBids[0];
+    const newBid = await Bid.findById(new_bid_id);
+    if (!newBid) return false;
 
     // Get current lowest bid excluding this new bid
-    const [prevLowest] = await db.query(
-        `SELECT MIN(total_amount) as min_amount 
-         FROM bids WHERE rfq_id = ? AND id != ?`,
-        [rfq_id, new_bid_id]
-    );
-
-    const prevL1 = prevLowest[0].min_amount;
+    const prevLowest = await Bid.findOne({
+        rfq_id,
+        _id: { $ne: newBid._id }
+    }).sort({ total_amount: 1 });
 
     // If new bid is lower than previous L1, L1 changed
-    if (prevL1 === null) return false; // first bid ever
-    return newBid.total_amount < prevL1;
+    if (!prevLowest) return false; // first bid ever
+    return newBid.total_amount < prevLowest.total_amount;
 }
 
 module.exports = { processAuctionExtension };

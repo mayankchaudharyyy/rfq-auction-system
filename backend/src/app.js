@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 
+const authRoutes = require('./routes/authRoutes');
 const rfqRoutes = require('./routes/rfqRoutes');
 const bidRoutes = require('./routes/bidRoutes');
 const auctionRoutes = require('./routes/auctionRoutes');
@@ -11,13 +12,14 @@ app.use(cors());
 app.use(express.json());
 
 // Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/rfqs', rfqRoutes);
 app.use('/api/bids', bidRoutes);
 app.use('/api/auctions', auctionRoutes);
 
 // Health check
 app.get('/', (req, res) => {
-    res.json({ message: 'RFQ Auction API is running' });
+    res.json({ message: 'RFQ Auction API is running', version: '2.0' });
 });
 
 module.exports = app;

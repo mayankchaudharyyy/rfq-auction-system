@@ -1,9 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const { createRFQ, getAllRFQs, getRFQById } = require('../controllers/rfqController');
+const { createRFQ, getMyRFQs, getActiveRFQs, getRFQById } = require('../controllers/rfqController');
+const { protect, restrictTo } = require('../middleware/auth');
 
-router.post('/create', createRFQ);
-router.get('/', getAllRFQs);
+// All routes require authentication
+router.use(protect);
+
+router.post('/create', restrictTo('buyer'), createRFQ);
+router.get('/my', restrictTo('buyer'), getMyRFQs);
+router.get('/active', restrictTo('supplier'), getActiveRFQs);
 router.get('/:id', getRFQById);
 
 module.exports = router;
