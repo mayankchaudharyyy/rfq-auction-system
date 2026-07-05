@@ -1,424 +1,496 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState, useRef } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Clock3, Gavel, Radio, Trophy, Calendar, Compass, ShieldAlert, Award, AlertCircle, ShieldCheck, CheckCircle2 } from 'lucide-react';
 import API from '../api/axios';
+import Modal from '../components/Modal';
+import StatusBadge from '../components/StatusBadge';
+import { useAuth } from '../hooks/useAuth';
+import { useSocket } from '../hooks/useSocket';
 
-function AuctionDetails() {
-    const { id } = useParams();
-    const navigate = useNavigate();
-    const [data, setData] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [timeRemaining, setTimeRemaining] = useState(null);
+const money = (value) => value ? `₹${Number(value).toLocaleString('en-IN')}` : 'No quotes';
+const dateTime = (value) => value ? new Date(value).toLocaleString('en-IN', {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit'
+}) : '-';
 
-    const fetchDetails = useCallback(async () => {
-        try {
-            const res = await API.get(`/rfqs/${id}`);
-            setData(res.data);
-        } catch (err) {
-            console.error('Failed to fetch auction details:', err);
-        } finally {
-            setLoading(false);
-        }
-    }, [id]);
+export default function AuctionDetails() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { socket } = useSocket();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [winnerBid, setWinnerBid] = useState(null);
+  const [notice, setNotice] = useState('');
 
-    // Check and update auction status
-    const checkStatus = useCallback(async () => {
-        try {
-            await API.post(`/auctions/check-status/${id}`);
-            fetchDetails();
-        } catch (err) {
-            console.error('Failed to check status:', err);
-        }
-    }, [id, fetchDetails]);
+  // States for timer and highlights
+  const [countdownText, setCountdownText] = useState('Ended');
+  const [timerAlertClass, setTimerAlertClass] = useState('');
+  const [highlightedBidId, setHighlightedBidId] = useState(null);
+  
+  const prevBidsRef = useRef([]);
 
-    useEffect(() => {
+  const fetchDetails = useCallback(async () => {
+    try {
+      const res = await API.get(`/rfqs/${id}`);
+      setData(res.data);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Unable to load auction details.');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => { fetchDetails(); }, [fetchDetails]);
+
+  // Socket triggers
+  useEffect(() => {
+    if (!socket) return undefined;
+    socket.emit('join_rfq_room', id);
+    
+    const refresh = (eventData) => {
+      setNotice(eventData?.message || 'Live auction board updated with incoming carrier bid.');
+      fetchDetails();
+      setTimeout(() => setNotice(''), 4000);
+    };
+
+    socket.on('bid_rankings_updated', refresh);
+    socket.on('auction_status_changed', refresh);
+    socket.on('winner_selected', refresh);
+    
+    return () => {
+      socket.off('bid_rankings_updated', refresh);
+      socket.off('auction_status_changed', refresh);
+      socket.off('winner_selected', refresh);
+      socket.emit('leave_rfq_room', id);
+    };
+  }, [socket, id, fetchDetails]);
+
+  // Fallback status checks
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        await API.post(`/auctions/check-status/${id}`);
         fetchDetails();
-        const refreshInterval = setInterval(() => {
-            checkStatus();
-        }, 15000);
-        return () => clearInterval(refreshInterval);
-    }, [fetchDetails, checkStatus]);
+      } catch {
+        clearInterval(interval);
+      }
+    }, 20000);
+    return () => clearInterval(interval);
+  }, [id, fetchDetails]);
 
-    // Countdown timer
-    useEffect(() => {
-        if (!data) return;
-        const timer = setInterval(() => {
-            const now = new Date();
-            const closeTime = new Date(data.rfq.bid_close_time);
-            const diff = closeTime - now;
-            if (diff <= 0) {
-                setTimeRemaining('Closed');
-                checkStatus();
-            } else {
-                const mins = Math.floor(diff / 60000);
-                const secs = Math.floor((diff % 60000) / 1000);
-                setTimeRemaining(`${mins}m ${secs}s`);
-            }
-        }, 1000);
-        return () => clearInterval(timer);
-    }, [data, checkStatus]);
-
-    function formatDate(dateStr) {
-        if (!dateStr) return 'N/A';
-        return new Date(dateStr).toLocaleString();
+  // Real-time Countdown effect
+  useEffect(() => {
+    if (!data?.rfq) return;
+    
+    const { status, bid_close_time } = data.rfq;
+    
+    if (status !== 'active') {
+      setCountdownText(status === 'draft' ? 'Draft Specification' : 'Auction Concluded');
+      setTimerAlertClass('');
+      return;
     }
 
-    function getStatusStyle(status) {
-        switch (status) {
-            case 'active': return { backgroundColor: '#d4edda', color: '#155724' };
-            case 'closed': return { backgroundColor: '#d6d8db', color: '#383d41' };
-            case 'force_closed': return { backgroundColor: '#f8d7da', color: '#721c24' };
-            case 'draft': return { backgroundColor: '#fff3cd', color: '#856404' };
-            default: return {};
-        }
+    const tick = () => {
+      const diff = new Date(bid_close_time) - new Date();
+      if (diff <= 0) {
+        setCountdownText('Clearing Market...');
+        setTimerAlertClass('');
+        return;
+      }
+
+      const totalSeconds = Math.floor(diff / 1000);
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      
+      setCountdownText(`${String(mins).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`);
+
+      // Color triggers
+      if (totalSeconds < 120) {
+        setTimerAlertClass('timer-pulse-red');
+      } else if (totalSeconds < 300) {
+        setTimerAlertClass('timer-pulse-orange');
+      } else {
+        setTimerAlertClass('');
+      }
+    };
+
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [data]);
+
+  // Bid update flash highlights
+  useEffect(() => {
+    if (!data?.bids) return;
+
+    const prevBids = prevBidsRef.current;
+    
+    const changed = data.bids.find((bid) => {
+      const match = prevBids.find((p) => p.id === bid.id);
+      if (!match) return true;
+      return match.total_amount !== bid.total_amount;
+    });
+
+    if (changed) {
+      setHighlightedBidId(changed.id);
+      const clear = setTimeout(() => setHighlightedBidId(null), 2000);
+      return () => clearTimeout(clear);
     }
 
-    function getRankLabel(rank) {
-        if (rank === 1) return { label: 'L1', color: '#28a745' };
-        if (rank === 2) return { label: 'L2', color: '#fd7e14' };
-        if (rank === 3) return { label: 'L3', color: '#dc3545' };
-        return { label: `L${rank}`, color: '#6c757d' };
-    }
+    prevBidsRef.current = data.bids;
+  }, [data?.bids]);
 
-    function getEventIcon(eventType) {
-        switch (eventType) {
-            case 'bid_submitted': return '';
-            case 'time_extended': return '';
-            case 'auction_closed': return '';
-            case 'force_closed': return '';
-            default: return '';
-        }
-    }
+  async function activateAuction() {
+    await API.post(`/auctions/activate/${id}`);
+    fetchDetails();
+  }
 
-    if (loading) return <div style={{ padding: '40px', textAlign: 'center' }}>Loading...</div>;
-    if (!data) return <div style={{ padding: '40px' }}>Auction not found.</div>;
+  async function closeAuction() {
+    await API.post(`/auctions/close/${id}`);
+    fetchDetails();
+  }
 
-    const { rfq, auction_config, bids, activity_log } = data;
+  async function selectWinner() {
+    await API.post(`/auctions/select-winner/${id}/${winnerBid.id}`);
+    setWinnerBid(null);
+    fetchDetails();
+  }
 
-    return (
-        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+  if (loading) return (
+    <div style={{ display: 'grid', placeItems: 'center', minHeight: '60vh' }}>
+      <div className="muted" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+        <Radio size={32} style={{ animation: 'radar-pulse 1.5s infinite', color: 'var(--brand)' }} />
+        <span>Retrieving live auction order book...</span>
+      </div>
+    </div>
+  );
+  if (error) return <div className="alert error">{error}</div>;
+  if (!data) return <div className="alert error">Auction details not found.</div>;
 
-            {/* Back button */}
-            <button
-                onClick={() => navigate('/')}
-                style={{
-                    marginBottom: '16px',
-                    padding: '8px 16px',
-                    backgroundColor: '#1a1a2e',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer'
-                }}
-            >
-                ← Back
+  const { rfq, bids, activity_log } = data;
+  const isBuyer = user.role === 'buyer';
+
+  return (
+    <>
+      <div style={{ marginBottom: '1.25rem' }}>
+        <button className="btn ghost sm" onClick={() => navigate(`/${user.role}`)}>
+          <ArrowLeft size={16} /> Back to Dashboard
+        </button>
+      </div>
+
+      {/* Header Bar */}
+      <div className="page-header" style={{ marginBottom: '1.75rem' }}>
+        <div className="page-header-info">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
+            <span className="mono bold" style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+              {rfq.reference_id}
+            </span>
+            <StatusBadge status={rfq.status} />
+          </div>
+          <h1>{rfq.name}</h1>
+          <p>
+            Shipper: <strong>{rfq.buyer_name}</strong> ({rfq.buyer_company || 'Enterprise'}) • 
+            Target Pickup: {new Date(rfq.pickup_service_date).toLocaleDateString()}
+          </p>
+        </div>
+        <div className="row-actions">
+          {isBuyer && rfq.status === 'draft' && (
+            <button className="btn" onClick={activateAuction}>
+              <Radio size={16} /> Launch Live Auction
             </button>
+          )}
+          {isBuyer && rfq.status === 'active' && (
+            <button className="btn danger" onClick={closeAuction}>
+              Force Close
+            </button>
+          )}
+          {!isBuyer && rfq.status === 'active' && (
+            <button className="btn" onClick={() => navigate(`/bid/${id}`)}>
+              <Gavel size={16} /> Submit / Revise Quote
+            </button>
+          )}
+        </div>
+      </div>
 
-            {/* Header */}
-            <div style={{
-                backgroundColor: '#1a1a2e',
-                color: '#fff',
-                padding: '20px 24px',
-                borderRadius: '8px',
-                marginBottom: '20px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '12px'
-            }}>
-                <div>
-                    <h2 style={{ margin: 0 }}>{rfq.name}</h2>
-                    <p style={{ margin: '4px 0 0', color: '#aaa', fontSize: '14px' }}>
-                        {rfq.reference_id} • Buyer: {rfq.buyer_name}
-                    </p>
-                </div>
-                <span style={{
-                    padding: '6px 16px',
-                    borderRadius: '20px',
-                    fontWeight: 'bold',
-                    fontSize: '13px',
-                    textTransform: 'uppercase',
-                    ...getStatusStyle(rfq.status)
-                }}>
-                    {rfq.status}
+      {notice && (
+        <div className="alert info" style={{ marginBottom: '1.5rem' }}>
+          <Radio size={16} />
+          <span>{notice}</span>
+        </div>
+      )}
+
+      {/* Main Terminal Grid */}
+      <div className="auction-grid">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+          
+          {/* Key Metrics */}
+          <section className="grid grid-3">
+            <div className="stat-card">
+              <div className="stat-info">
+                <span className="stat-label">Remaining Time</span>
+                <span className={`stat-value mono timer-display ${timerAlertClass}`}>
+                  {countdownText}
                 </span>
+              </div>
+              <div className="stat-icon-wrapper">
+                <Clock3 size={20} />
+              </div>
             </div>
-
-            {/* Info Cards */}
-            <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: '16px',
-                marginBottom: '24px'
-            }}>
-                <InfoCard
-                    title="⏳ Time Remaining"
-                    value={rfq.status === 'active' ? timeRemaining || '...' : 'Ended'}
-                    highlight={rfq.status === 'active'}
-                />
-                <InfoCard
-                    title="🕐 Bid Close Time"
-                    value={formatDate(rfq.bid_close_time)}
-                />
-                <InfoCard
-                    title="🚫 Forced Close"
-                    value={formatDate(rfq.forced_close_time)}
-                />
-                <InfoCard
-                    title="📦 Pickup Date"
-                    value={new Date(rfq.pickup_service_date).toLocaleDateString()}
-                />
+            
+            <div className="stat-card">
+              <div className="stat-info">
+                <span className="stat-label">Lowest Market Rate</span>
+                <span className="stat-value mono">
+                  {rfq.current_lowest_bid ? money(rfq.current_lowest_bid) : 'Awaiting Bids'}
+                </span>
+              </div>
+              <div className="stat-icon-wrapper">
+                <Trophy size={20} />
+              </div>
             </div>
+            
+            <div className="stat-card">
+              <div className="stat-info">
+                <span className="stat-label">Quotes Received</span>
+                <span className="stat-value mono">{bids.length}</span>
+              </div>
+              <div className="stat-icon-wrapper">
+                <Gavel size={20} />
+              </div>
+            </div>
+          </section>
 
-            {/* Auction Config */}
-            {auction_config && (
-                <div style={{
-                    backgroundColor: '#f0f4ff',
-                    border: '1px solid #c0d0ff',
-                    borderRadius: '8px',
-                    padding: '16px 20px',
-                    marginBottom: '24px'
-                }}>
-                    <h3 style={{ margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '3px' }}>
-  <img
-    width="27"
-    height="27"
-    src="https://img.icons8.com/ios/50/automatic.png"
-    alt="automatic"
-  />
-  Auction Configuration
-</h3>
-                    <div style={{ display: 'flex', gap: '30px', flexWrap: 'wrap', fontSize: '14px' }}>
-                        <span>
-                            <strong>Trigger Window:</strong> {auction_config.trigger_window_minutes} mins
-                        </span>
-                        <span>
-                            <strong>Extension Duration:</strong> {auction_config.extension_duration_minutes} mins
-                        </span>
-                        <span>
-                            <strong>Extension Trigger:</strong> {auction_config.extension_trigger.replace(/_/g, ' ')}
-                        </span>
-                    </div>
-                </div>
-            )}
-
-            {/* Bids Table */}
-            <div style={{ marginBottom: '24px' }}>
-                <div style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: '12px'
-                }}>
-                    <h3 style={{
-                        margin: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px"
-                    }}>
-                        <img
-                            src="https://img.icons8.com/doodle/48/analytics.png"
-                            width="28"
-                            height="28"
-                            alt="analytics"
-                        />
-                        Supplier Bids
-                    </h3>
-                    {rfq.status === 'active' && (
-                        <button
-                            onClick={() => navigate(`/bid/${rfq.id}`)}
-                            style={{
-                                padding: '8px 18px',
-                                backgroundColor: '#e94560',
-                                color: '#fff',
-                                border: 'none',
-                                borderRadius: '6px',
-                                cursor: 'pointer'
-                            }}
-                        >
-                            + Submit Bid
-                        </button>
+          {/* Bidding Leaderboard */}
+          <section className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--surface-border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3>Carrier Bidding Board & Ranking</h3>
+                <p className="small muted">Ranked in real time by Total Landed Cost (Lowest first)</p>
+              </div>
+              <div className="system-status-pill" style={{ margin: 0 }}>
+                <span className="status-dot-pulse" />
+                <span>Socket Connected</span>
+              </div>
+            </div>
+            
+            <div className="table-wrap" style={{ margin: 0, border: 'none', borderRadius: 0, boxShadow: 'none' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Rank</th>
+                    <th>Supplier / Carrier</th>
+                    <th>Freight (Base)</th>
+                    <th>Origin THC</th>
+                    <th>Dest. THC</th>
+                    <th>Total Landed</th>
+                    <th>Transit</th>
+                    <th>Status</th>
+                    {isBuyer && ['closed', 'force_closed'].includes(rfq.status) && (
+                      <th style={{ textAlign: 'right' }}>Award</th>
                     )}
-                </div>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bids.length > 0 ? (
+                    bids.map((bid, index) => {
+                      const isL1 = index === 0;
+                      const isL2 = index === 1;
+                      const isL3 = index === 2;
+                      const isHighlight = highlightedBidId === bid.id;
+                      const isWinningBid = bid.is_winner;
 
-                {bids.length === 0 ? (
-                    <div style={{
-                        padding: '30px',
-                        textAlign: 'center',
-                        backgroundColor: '#f9f9f9',
-                        borderRadius: '8px',
-                        color: '#888'
-                    }}>
-                        No bids submitted yet.
-                    </div>
-                ) : (
-                    <table style={{
-                        width: '100%',
-                        borderCollapse: 'collapse',
-                        backgroundColor: '#fff',
-                        borderRadius: '8px',
-                        overflow: 'hidden',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
-                    }}>
-                        <thead>
-                            <tr style={{ backgroundColor: '#1a1a2e', color: '#fff' }}>
-                                <th style={thStyle}>Rank</th>
-                                <th style={thStyle}>Supplier</th>
-                                <th style={thStyle}>Carrier</th>
-                                <th style={thStyle}>Freight (₹)</th>
-                                <th style={thStyle}>Origin (₹)</th>
-                                <th style={thStyle}>Destination (₹)</th>
-                                <th style={thStyle}>Total (₹)</th>
-                                <th style={thStyle}>Transit</th>
-                                <th style={thStyle}>Valid Until</th>
-                                <th style={thStyle}>Submitted</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {bids.map((bid, index) => {
-                                const rank = getRankLabel(bid.ranking);
-                                return (
-                                    <tr
-                                        key={bid.id}
-                                        style={{
-                                            backgroundColor: bid.ranking === 1 ? '#f0fff4' : index % 2 === 0 ? '#f9f9f9' : '#fff'
-                                        }}
-                                    >
-                                        <td style={{ ...tdStyle, textAlign: 'center' }}>
-                                            <span style={{
-                                                padding: '3px 10px',
-                                                borderRadius: '12px',
-                                                backgroundColor: rank.color,
-                                                color: '#fff',
-                                                fontWeight: 'bold',
-                                                fontSize: '12px'
-                                            }}>
-                                                {rank.label}
-                                            </span>
-                                        </td>
-                                        <td style={tdStyle}>{bid.supplier_name}</td>
-                                        <td style={tdStyle}>{bid.carrier_name}</td>
-                                        <td style={tdStyle}>₹{Number(bid.freight_charges).toLocaleString()}</td>
-                                        <td style={tdStyle}>₹{Number(bid.origin_charges).toLocaleString()}</td>
-                                        <td style={tdStyle}>₹{Number(bid.destination_charges).toLocaleString()}</td>
-                                        <td style={{
-                                            ...tdStyle,
-                                            fontWeight: bid.ranking === 1 ? 'bold' : 'normal',
-                                            color: bid.ranking === 1 ? '#28a745' : '#000'
-                                        }}>
-                                            ₹{Number(bid.total_amount).toLocaleString()}
-                                        </td>
-                                        <td style={tdStyle}>{bid.transit_time} days</td>
-                                        <td style={tdStyle}>{new Date(bid.quote_validity).toLocaleDateString()}</td>
-                                        <td style={tdStyle}>{formatDate(bid.submitted_at)}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                )}
-            </div>
-
-            {/* Activity Log */}
-            <div>
-                <h3 style={{
-  marginBottom: '12px',
-  display: "flex",
-  alignItems: "center",
-  gap: "3px"
-}}>
-  <img
-    src="https://img.icons8.com/external-flaticons-lineal-color-flat-icons/64/external-logs-mobile-app-development-flaticons-lineal-color-flat-icons-2.png"
-    width="30"
-    height="30"
-    alt="logs"
-  />
-  Activity Log
-</h3>
-                {activity_log.length === 0 ? (
-                    <div style={{ color: '#888' }}>No activity yet.</div>
-                ) : (
-                    <div style={{
-                        backgroundColor: '#fff',
-                        borderRadius: '8px',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-                        overflow: 'hidden'
-                    }}>
-                        {activity_log.map((log, index) => (
-                            <div
-                                key={log.id}
-                                style={{
-                                    padding: '14px 20px',
-                                    borderBottom: index < activity_log.length - 1 ? '1px solid #eee' : 'none',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'flex-start',
-                                    gap: '12px',
-                                    backgroundColor: log.event_type === 'time_extended' ? '#fffbe6' : '#fff'
-                                }}
-                            >
-                                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                                    <span style={{ fontSize: '20px' }}>
-                                        {getEventIcon(log.event_type)}
-                                    </span>
-                                    <div>
-                                        <div style={{ fontWeight: '600', fontSize: '14px' }}>
-                                            {log.description}
-                                        </div>
-                                        {log.event_type === 'time_extended' && (
-                                            <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
-                                                {formatDate(log.old_close_time)} → {formatDate(log.new_close_time)}
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                                <div style={{
-                                    fontSize: '12px',
-                                    color: '#888',
-                                    whiteSpace: 'nowrap'
-                                }}>
-                                    {formatDate(log.created_at)}
-                                </div>
+                      return (
+                        <tr 
+                          key={bid.id}
+                          className={`${isHighlight ? 'bid-row-new' : ''} ${bid.supplier_id === user.id ? 'own-bid-row' : ''}`}
+                        >
+                          <td>
+                            {isL1 ? (
+                              <span className="rank l1">L1</span>
+                            ) : isL2 ? (
+                              <span className="rank l2">L2</span>
+                            ) : isL3 ? (
+                              <span className="rank l3">L3</span>
+                            ) : (
+                              <span className="rank">L{index + 1}</span>
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.125rem' }}>
+                              <span className="bold" style={{ color: 'var(--text-main)' }}>
+                                {bid.supplier_name || 'Carrier Forwarder'}
+                              </span>
+                              <span className="small muted">
+                                Vessel Line: <strong>{bid.carrier_name}</strong>
+                              </span>
                             </div>
-                        ))}
+                          </td>
+                          <td>
+                            <span className="mono bold">{money(bid.freight_charges)}</span>
+                          </td>
+                          <td>
+                            <span className="mono small muted">{money(bid.origin_charges)}</span>
+                          </td>
+                          <td>
+                            <span className="mono small muted">{money(bid.destination_charges)}</span>
+                          </td>
+                          <td>
+                            <span className="mono bold" style={{ color: 'var(--text-main)', fontSize: '0.9375rem' }}>
+                              {money(bid.total_amount)}
+                            </span>
+                          </td>
+                          <td>
+                            <span className="mono small muted">{bid.transit_time}</span>
+                          </td>
+                          <td>
+                            {isWinningBid ? (
+                              <StatusBadge status="closed" winner={true} />
+                            ) : isL1 && rfq.status === 'active' ? (
+                              <span className="badge active" style={{ fontSize: '0.625rem' }}>
+                                <span className="badge-dot" /> Current Best
+                              </span>
+                            ) : (
+                              <span className="small muted">Submitted</span>
+                            )}
+                          </td>
+                          {isBuyer && ['closed', 'force_closed'].includes(rfq.status) && (
+                            <td style={{ textAlign: 'right' }}>
+                              {!rfq.winning_bid_id && (
+                                <button 
+                                  className="btn sm" 
+                                  onClick={() => setWinnerBid(bid)}
+                                >
+                                  <Award size={13} /> Select Winner
+                                </button>
+                              )}
+                              {rfq.winning_bid_id === bid.id && (
+                                <span className="bold" style={{ color: 'var(--text-main)', fontSize: '0.8125rem' }}>
+                                  ✓ Contract Awarded
+                                </span>
+                              )}
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    <tr>
+                      <td colSpan="9" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                        No carrier rate quotations have been placed on this auction yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        {/* Right Rail: Anti-Snipe Info & Live Activity Feed */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          
+          {/* Anti-Sniping Parameter Spec */}
+          <div className="card">
+            <div className="card-header">
+              <h3>Auction Extension Rules</h3>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem', fontSize: '0.8125rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="muted">Trigger Window</span>
+                <span className="mono bold">{rfq.trigger_window_minutes || 10} minutes</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="muted">Extension Duration</span>
+                <span className="mono bold">+{rfq.extension_duration_minutes || 5} minutes</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="muted">Hard Stop Ceiling</span>
+                <span className="mono small">{dateTime(rfq.forced_close_time)}</span>
+              </div>
+              <div style={{ padding: '0.625rem 0.75rem', background: 'var(--surface-subtle)', borderRadius: 'var(--radius-xs)', marginTop: '0.25rem', border: '1px solid var(--surface-border)' }}>
+                <span className="small muted" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <ShieldCheck size={14} color="var(--text-muted)" /> 
+                  Dynamic sniper protection prevents last-minute quote manipulation.
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Audit Event Feed */}
+          <div className="card">
+            <div className="card-header">
+              <h3>Live Activity Audit</h3>
+              <span className="mono small muted">{activity_log?.length || 0} events</span>
+            </div>
+            
+            <div className="activity-feed">
+              {activity_log && activity_log.length > 0 ? (
+                activity_log.map((item, i) => {
+                  const isBid = item.event_type?.includes('bid');
+                  return (
+                    <div 
+                      key={i} 
+                      className={`activity-item ${isBid ? 'bid-event' : 'system-event'}`}
+                    >
+                      <div className="activity-item-info">
+                        <span className="bold" style={{ color: 'var(--text-main)' }}>{item.message}</span>
+                        <span className="activity-item-time">{dateTime(item.created_at)}</span>
+                      </div>
                     </div>
-                )}
+                  );
+                })
+              ) : (
+                <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+                  No logged activity events yet.
+                </div>
+              )}
             </div>
+          </div>
         </div>
-    );
-}
+      </div>
 
-function InfoCard({ title, value, highlight }) {
-    return (
-        <div style={{
-            backgroundColor: highlight ? '#1a1a2e' : '#f9f9f9',
-            color: highlight ? '#fff' : '#333',
-            padding: '16px 20px',
-            borderRadius: '8px',
-            boxShadow: '0 2px 6px rgba(0,0,0,0.06)'
-        }}>
-            <div style={{ fontSize: '12px', marginBottom: '6px', opacity: 0.7 }}>{title}</div>
-            <div style={{
-                fontSize: highlight ? '22px' : '15px',
-                fontWeight: 'bold'
-            }}>
-                {value}
+      {/* Winner Confirmation Modal */}
+      {winnerBid && (
+        <Modal 
+          title="Confirm Contract Award" 
+          onClose={() => setWinnerBid(null)}
+          actions={
+            <>
+              <button className="btn secondary" onClick={() => setWinnerBid(null)}>
+                Cancel
+              </button>
+              <button className="btn" onClick={selectWinner}>
+                <Award size={15} /> Confirm Award Selection
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <p>
+              You are about to award this freight contract to <strong>{winnerBid.supplier_name || 'Selected Carrier'}</strong> with carrier line <strong>{winnerBid.carrier_name}</strong>.
+            </p>
+            <div style={{ padding: '1rem', background: 'var(--surface-subtle)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span className="muted">Total Landed Amount:</span>
+                <span className="mono bold" style={{ color: 'var(--text-main)', fontSize: '1.125rem' }}>
+                  {money(winnerBid.total_amount)}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="muted">Quoted Transit Time:</span>
+                <span className="mono bold">{winnerBid.transit_time}</span>
+              </div>
             </div>
-        </div>
-    );
+            <p className="small muted">
+              Once awarded, this decision is logged in the regulatory compliance audit trail and notifications are broadcast to all participants.
+            </p>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
 }
-
-const thStyle = {
-    padding: '12px 14px',
-    textAlign: 'left',
-    fontWeight: '600',
-    fontSize: '13px'
-};
-
-const tdStyle = {
-    padding: '11px 14px',
-    fontSize: '13px',
-    borderBottom: '1px solid #eee'
-};
-
-export default AuctionDetails;

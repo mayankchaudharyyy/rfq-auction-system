@@ -1,68 +1,90 @@
-import { Link } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { ClipboardList, Gavel, LogOut, Plus, Anchor, ShieldCheck } from 'lucide-react';
+import { useAuth } from '../hooks/useAuth';
 
 function Navbar() {
-    return (
-        <nav style={{
-            backgroundColor: '#1a1a2e',
-            padding: '15px 30px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            borderRadius: '12px'
-        }}>
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const links = user?.role === 'buyer'
+    ? [
+        { to: '/buyer', label: 'RFQ Command Center', icon: ClipboardList },
+        { to: '/create', label: 'Create RFQ', icon: Plus }
+      ]
+    : [
+        { to: '/supplier', label: 'Auction Terminal', icon: Gavel }
+      ];
 
-            {/* Logo */}
-            <Link to="/" style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
-                color: '#e94560',
-                fontSize: '20px',
-                fontWeight: 'bold',
-                textDecoration: 'none'
-            }}>
-                <img
-                    width="40"
-                    height="40"
-                    src="https://img.icons8.com/external-flaticons-flat-flat-icons/64/external-auction-auction-house-flaticons-flat-flat-icons-2.png"
-                    alt="RFQ"
-                />
-                <span>RFQ Auction</span>
-            </Link>
+  function handleLogout() {
+    logout();
+    navigate('/');
+  }
 
-            {/* Right Menu */}
-            <div style={{
-                display: 'flex',
-                gap: '25px',
-                alignItems: 'center'
-            }}>
+  // Initials for avatar
+  const initials = user?.name
+    ? user.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+    : 'U';
 
-                <Link to="/" style={{
-                    color: '#fff',
-                    textDecoration: 'none'
-                }}>
-                    Auctions
-                </Link>
+  return (
+    <aside className="sidebar">
+      <div className="brand">
+        <span className="brand-mark"><Anchor size={18} /></span>
+        <div className="brand-text">
+          <span className="brand-title">BidFlow</span>
+          <span className="brand-tag">Enterprise SaaS</span>
+        </div>
+      </div>
 
-                <Link to="/create" style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    color: '#fff',
-                    textDecoration: 'none'
-                }}>
-                    <img
-                        width="20"
-                        height="20"
-                        src="https://img.icons8.com/ios-glyphs/30/FFFFFF/plus--v1.png"
-                        alt="Create"
-                    />
-                    <span>Create RFQ</span>
-                </Link>
+      <div className="system-status-pill">
+        <span className="status-dot-pulse" />
+        <span>Live Feed Active</span>
+      </div>
 
+      <div className="nav-section-label">Navigation</div>
+      <nav className="nav-stack">
+        {links.map((item) => {
+          const Icon = item.icon;
+          return (
+            <NavLink 
+              key={item.to} 
+              to={item.to} 
+              className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
+            >
+              <Icon size={18} />
+              <span>{item.label}</span>
+            </NavLink>
+          );
+        })}
+      </nav>
+
+      <div className="sidebar-footer">
+        <div className="user-profile-badge">
+          <div className="avatar-initials">
+            {initials}
+          </div>
+          <div className="user-profile-info">
+            <div className="user-profile-name">
+              {user?.name || 'Workspace User'}
             </div>
-        </nav>
-    );
+            <div className="user-profile-meta">
+              {user?.company_name || 'Global Forwarding'} • {user?.role}
+            </div>
+          </div>
+        </div>
+
+        <button 
+          className="btn secondary sm full" 
+          onClick={handleLogout} 
+          style={{ 
+            color: 'var(--text-secondary)',
+            justifyContent: 'center'
+          }}
+        >
+          <LogOut size={15} />
+          <span>Sign Out</span>
+        </button>
+      </div>
+    </aside>
+  );
 }
 
 export default Navbar;

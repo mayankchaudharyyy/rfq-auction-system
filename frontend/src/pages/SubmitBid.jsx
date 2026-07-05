@@ -1,326 +1,307 @@
-import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Send, ShieldCheck, Landmark, Compass, Info, CheckCircle2 } from 'lucide-react';
 import API from '../api/axios';
+import Modal from '../components/Modal';
 
-function SubmitBid() {
-    const { rfq_id } = useParams();
-    const navigate = useNavigate();
-    const [rfq, setRfq] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [submitting, setSubmitting] = useState(false);
-    const [error, setError] = useState('');
-    const [success, setSuccess] = useState('');
+export default function SubmitBid() {
+  const { rfq_id } = useParams();
+  const navigate = useNavigate();
+  const [rfq, setRfq] = useState(null);
+  const [form, setForm] = useState({ 
+    carrier_name: '', 
+    freight_charges: '', 
+    origin_charges: '', 
+    destination_charges: '', 
+    transit_time: '', 
+    quote_validity: '' 
+  });
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState('');
+  
+  const total = useMemo(() => {
+    return (Number(form.freight_charges) || 0) + (Number(form.origin_charges) || 0) + (Number(form.destination_charges) || 0);
+  }, [form]);
 
-    const [form, setForm] = useState({
-        supplier_id: 2,
-        carrier_name: '',
-        freight_charges: '',
-        origin_charges: '',
-        destination_charges: '',
-        transit_time: '',
-        quote_validity: ''
-    });
-
-    useEffect(() => {
-        async function fetchRFQ() {
-            try {
-                const res = await API.get(`/rfqs/${rfq_id}`);
-                setRfq(res.data.rfq);
-            } catch (err) {
-                console.error('Failed to fetch RFQ:', err);
-            } finally {
-                setLoading(false);
-            }
-        }
-        fetchRFQ();
-    }, [rfq_id]);
-
-    function handleChange(e) {
-        setForm({ ...form, [e.target.name]: e.target.value });
+  useEffect(() => {
+    async function fetchRFQ() {
+      try {
+        const res = await API.get(`/rfqs/${rfq_id}`);
+        setRfq(res.data.rfq);
+      } catch (err) {
+        setError(err.response?.data?.error || 'Unable to load RFQ details.');
+      } finally {
+        setLoading(false);
+      }
     }
+    fetchRFQ();
+  }, [rfq_id]);
 
-    async function handleSubmit(e) {
-        e.preventDefault();
-        setError('');
-        setSuccess('');
-        setSubmitting(true);
+  function handleChange(e) {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  }
 
-        try {
-            const payload = {
-                rfq_id: parseInt(rfq_id),
-                supplier_id: parseInt(form.supplier_id),
-                carrier_name: form.carrier_name,
-                freight_charges: parseFloat(form.freight_charges),
-                origin_charges: parseFloat(form.origin_charges) || 0,
-                destination_charges: parseFloat(form.destination_charges) || 0,
-                transit_time: parseInt(form.transit_time),
-                quote_validity: form.quote_validity
-            };
-
-            const res = await API.post('/bids/submit', payload);
-
-            const newCloseTime = new Date(res.data.current_bid_close_time).toLocaleString();
-            setSuccess(` Bid submitted! Current close time: ${newCloseTime}`);
-
-            // Reset form
-            setForm({
-                supplier_id: form.supplier_id,
-                carrier_name: '',
-                freight_charges: '',
-                origin_charges: '',
-                destination_charges: '',
-                transit_time: '',
-                quote_validity: ''
-            });
-
-        } catch (err) {
-            setError(err.response?.data?.error || 'Something went wrong');
-        } finally {
-            setSubmitting(false);
-        }
+  async function submitBid() {
+    setSubmitting(true);
+    setError('');
+    try {
+      await API.post('/bids/submit', {
+        rfq_id,
+        ...form,
+        freight_charges: Number(form.freight_charges),
+        origin_charges: Number(form.origin_charges) || 0,
+        destination_charges: Number(form.destination_charges) || 0,
+        transit_time: String(form.transit_time)
+      });
+      navigate(`/auction/${rfq_id}`);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Unable to submit bid.');
+      setConfirming(false);
+    } finally {
+      setSubmitting(false);
     }
+  }
 
-    const totalAmount =
-        (parseFloat(form.freight_charges) || 0) +
-        (parseFloat(form.origin_charges) || 0) +
-        (parseFloat(form.destination_charges) || 0);
+  if (loading) return (
+    <div style={{ display: 'grid', placeItems: 'center', minHeight: '60vh' }}>
+      <div className="muted">Loading carrier quote sheet...</div>
+    </div>
+  );
 
-    if (loading) return <div style={{ padding: '40px', textAlign: 'center' }}>Loading...</div>;
-    if (!rfq) return <div style={{ padding: '40px' }}>RFQ not found.</div>;
+  return (
+    <>
+      <div style={{ marginBottom: '1.25rem' }}>
+        <button className="btn ghost sm" onClick={() => navigate(`/auction/${rfq_id}`)}>
+          <ArrowLeft size={16} /> Back to Live Auction
+        </button>
+      </div>
 
-    return (
-        <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+      <div className="page-header" style={{ marginBottom: '1.75rem' }}>
+        <div className="page-header-info">
+          <div className="eyebrow">
+            <Landmark size={13} /> Rate Proposal Console
+          </div>
+          <h1>Submit Bidding Quote</h1>
+          <p>Provide ocean freight rates, origin/destination terminal handling charges, and transit commitments.</p>
+        </div>
+      </div>
 
-            {/* Back button */}
-            <button
-                onClick={() => navigate(`/auction/${rfq_id}`)}
-                style={{
-                    marginBottom: '16px',
-                    padding: '8px 16px',
-                    backgroundColor: '#1a1a2e',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer'
-                }}
-            >
-                ← Back to Auction
+      {error && <div className="alert error" style={{ marginBottom: '1.25rem' }}>{error}</div>}
+
+      <div className="grid" style={{ gridTemplateColumns: '1.2fr 0.8fr', gap: '1.75rem', alignItems: 'start' }}>
+        <form className="form" onSubmit={(e) => { e.preventDefault(); setConfirming(true); }}>
+          
+          {/* Card 1: Carrier & Vessel Info */}
+          <div className="card">
+            <div className="card-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Compass size={16} color="var(--text-main)" />
+                <span>Operating Vessel Line & Equipment</span>
+              </h3>
+            </div>
+            
+            <div className="grid grid-2">
+              <div className="field">
+                <label>Carrier / Vessel Line Name</label>
+                <input 
+                  name="carrier_name" 
+                  value={form.carrier_name} 
+                  onChange={handleChange} 
+                  required 
+                  placeholder="e.g., Maersk Line, MSC, CMA CGM" 
+                />
+              </div>
+
+              <div className="field">
+                <label>Estimated Transit Time</label>
+                <input 
+                  name="transit_time" 
+                  value={form.transit_time} 
+                  onChange={handleChange} 
+                  required 
+                  placeholder="e.g., 6 Days (Port to Port)" 
+                />
+              </div>
+
+              <div className="field" style={{ gridColumn: 'span 2' }}>
+                <label>Quote Validity Period</label>
+                <input 
+                  type="date" 
+                  name="quote_validity" 
+                  value={form.quote_validity} 
+                  onChange={handleChange} 
+                  required 
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2: Cost Breakdown */}
+          <div className="card">
+            <div className="card-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Landmark size={16} color="var(--text-main)" />
+                <span>Itemized Commercial Freight Fees</span>
+              </h3>
+            </div>
+            
+            <div className="grid grid-3">
+              <div className="field">
+                <label>Base Ocean Freight (₹)</label>
+                <input 
+                  type="number" 
+                  name="freight_charges" 
+                  value={form.freight_charges} 
+                  onChange={handleChange} 
+                  required 
+                  min="1" 
+                  placeholder="0.00" 
+                />
+              </div>
+
+              <div className="field">
+                <label>Origin THC (₹)</label>
+                <input 
+                  type="number" 
+                  name="origin_charges" 
+                  value={form.origin_charges} 
+                  onChange={handleChange} 
+                  min="0" 
+                  placeholder="0.00" 
+                />
+              </div>
+
+              <div className="field">
+                <label>Destination THC (₹)</label>
+                <input 
+                  type="number" 
+                  name="destination_charges" 
+                  value={form.destination_charges} 
+                  onChange={handleChange} 
+                  min="0" 
+                  placeholder="0.00" 
+                />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+            <button className="btn" type="submit" style={{ minWidth: '160px' }}>
+              <Send size={14} /> Review & Submit Quote
             </button>
+            <button className="btn secondary" type="button" onClick={() => navigate(`/auction/${rfq_id}`)}>
+              Cancel
+            </button>
+          </div>
+        </form>
 
-            {/* RFQ Info */}
-            <div style={{
-                backgroundColor: '#1a1a2e',
-                color: '#fff',
-                padding: '16px 20px',
-                borderRadius: '8px',
-                marginBottom: '24px'
-            }}>
-                <h3 style={{ margin: 0 }}>{rfq.name}</h3>
-                <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#aaa' }}>
-                    {rfq.reference_id} • Close: {new Date(rfq.bid_close_time).toLocaleString()}
-                </p>
+        {/* Right Rail: Real-time Landed Cost Sheet */}
+        <div style={{ position: 'sticky', top: '1.5rem' }}>
+          <div className="card">
+            <div className="card-header">
+              <h3>Landed Quote Breakdown</h3>
             </div>
 
-            <h2 style={{ marginBottom: '20px' }}>Submit Your Quote</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem', fontSize: '0.8125rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '0.4375rem', borderBottom: '1px solid var(--border-subtle)' }}>
+                <span className="muted">Base Ocean Freight:</span>
+                <span className="mono bold">₹{Number(form.freight_charges || 0).toLocaleString('en-IN')}</span>
+              </div>
 
-            {/* Error */}
-            {error && (
-                <div style={{
-                    backgroundColor: '#ffe0e0',
-                    color: '#cc0000',
-                    padding: '12px',
-                    borderRadius: '6px',
-                    marginBottom: '16px'
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '0.4375rem', borderBottom: '1px solid var(--border-subtle)' }}>
+                <span className="muted">Origin Handling (THC):</span>
+                <span className="mono bold">₹{Number(form.origin_charges || 0).toLocaleString('en-IN')}</span>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '0.4375rem', borderBottom: '1px solid var(--border-subtle)' }}>
+                <span className="muted">Destination Handling (THC):</span>
+                <span className="mono bold">₹{Number(form.destination_charges || 0).toLocaleString('en-IN')}</span>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.5rem' }}>
+                <span className="bold">Total Landed Rate:</span>
+                <span className="mono bold" style={{ color: 'var(--text-main)', fontSize: '1.25rem' }}>
+                  ₹{total.toLocaleString('en-IN')}
+                </span>
+              </div>
+
+              {rfq?.current_lowest_bid && (
+                <div style={{ 
+                  padding: '0.6875rem 0.75rem', 
+                  borderRadius: 'var(--radius-xs)', 
+                  background: 'var(--surface-subtle)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--text-main)',
+                  marginTop: '0.25rem',
+                  fontSize: '0.75rem'
                 }}>
-                     {error}
+                  {total === 0 ? (
+                    <span>Current market best rate is <strong>₹{Number(rfq.current_lowest_bid).toLocaleString('en-IN')}</strong></span>
+                  ) : total < rfq.current_lowest_bid ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={14} /> Your quote beats current L1 by ₹{(rfq.current_lowest_bid - total).toLocaleString('en-IN')}!
+                    </span>
+                  ) : (
+                    <span>Current L1 is ₹{Number(rfq.current_lowest_bid).toLocaleString('en-IN')}. Submit a lower quote to take rank #1.</span>
+                  )}
                 </div>
-            )}
+              )}
 
-            {/* Success */}
-            {success && (
-                <div style={{
-                    backgroundColor: '#d4edda',
-                    color: '#155724',
-                    padding: '12px',
-                    borderRadius: '6px',
-                    marginBottom: '16px'
-                }}>
-                    {success}
-                    <br />
-                    <button
-                        onClick={() => navigate(`/auction/${rfq_id}`)}
-                        style={{
-                            marginTop: '8px',
-                            padding: '6px 14px',
-                            backgroundColor: '#155724',
-                            color: '#fff',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer'
-                        }}
-                    >
-                        View Auction
-                    </button>
+              <div style={{ padding: '0.625rem 0.75rem', background: 'var(--surface-subtle)', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border)' }}>
+                <div className="small muted" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <ShieldCheck size={14} color="var(--text-muted)" />
+                  Quotes are sealed and ranked anonymously on the live board.
                 </div>
-            )}
-
-            <form onSubmit={handleSubmit}>
-
-                {/* Supplier selector */}
-                <label style={labelStyle}>
-                    Supplier
-                    <select
-                        style={inputStyle}
-                        name="supplier_id"
-                        value={form.supplier_id}
-                        onChange={handleChange}
-                    >
-                        <option value={2}>Supplier One</option>
-                        <option value={3}>Supplier Two</option>
-                        <option value={4}>Supplier Three</option>
-                    </select>
-                </label>
-
-                <label style={labelStyle}>
-                    Carrier Name
-                    <input
-                        style={inputStyle}
-                        name="carrier_name"
-                        value={form.carrier_name}
-                        onChange={handleChange}
-                        required
-                        placeholder="e.g. Fast Freight Co"
-                    />
-                </label>
-
-                {/* Charges */}
-                <div style={{
-                    backgroundColor: '#f9f9f9',
-                    border: '1px solid #eee',
-                    borderRadius: '8px',
-                    padding: '16px',
-                    marginBottom: '15px'
-                }}>
-                    <h4 style={{ margin: '0 0 12px' }}>💰 Charges (₹)</h4>
-
-                    <label style={labelStyle}>
-                        Freight Charges *
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            name="freight_charges"
-                            value={form.freight_charges}
-                            onChange={handleChange}
-                            required
-                            min="0"
-                            placeholder="0"
-                        />
-                    </label>
-
-                    <label style={labelStyle}>
-                        Origin Charges
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            name="origin_charges"
-                            value={form.origin_charges}
-                            onChange={handleChange}
-                            min="0"
-                            placeholder="0"
-                        />
-                    </label>
-
-                    <label style={labelStyle}>
-                        Destination Charges
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            name="destination_charges"
-                            value={form.destination_charges}
-                            onChange={handleChange}
-                            min="0"
-                            placeholder="0"
-                        />
-                    </label>
-
-                    {/* Live total */}
-                    <div style={{
-                        backgroundColor: '#1a1a2e',
-                        color: '#fff',
-                        padding: '10px 14px',
-                        borderRadius: '6px',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        fontWeight: 'bold'
-                    }}>
-                        <span>Total Amount</span>
-                        <span>₹{totalAmount.toLocaleString()}</span>
-                    </div>
-                </div>
-
-                <label style={labelStyle}>
-                    Transit Time (days)
-                    <input
-                        style={inputStyle}
-                        type="number"
-                        name="transit_time"
-                        value={form.transit_time}
-                        onChange={handleChange}
-                        required
-                        min="1"
-                        placeholder="e.g. 3"
-                    />
-                </label>
-
-                <label style={labelStyle}>
-                    Quote Validity
-                    <input
-                        style={inputStyle}
-                        type="date"
-                        name="quote_validity"
-                        value={form.quote_validity}
-                        onChange={handleChange}
-                        required
-                    />
-                </label>
-
-                <button
-                    type="submit"
-                    disabled={submitting}
-                    style={{
-                        width: '100%',
-                        padding: '14px',
-                        backgroundColor: '#e94560',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: '6px',
-                        fontSize: '16px',
-                        fontWeight: 'bold',
-                        cursor: submitting ? 'not-allowed' : 'pointer',
-                        marginTop: '8px'
-                    }}
-                >
-                    {submitting ? 'Submitting...' : 'Submit Bid'}
-                </button>
-            </form>
+              </div>
+            </div>
+          </div>
         </div>
-    );
+      </div>
+
+      {/* Confirmation Modal */}
+      {confirming && (
+        <Modal 
+          title="Confirm Rate Quotation" 
+          onClose={() => setConfirming(false)}
+          actions={
+            <>
+              <button className="btn secondary" onClick={() => setConfirming(false)}>
+                Edit Rates
+              </button>
+              <button className="btn" disabled={submitting} onClick={submitBid}>
+                {submitting ? 'Transmitting...' : 'Confirm & Transmit Quote'}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem' }}>
+            <p>
+              Please verify your commercial freight quotation before sending to the live auction room:
+            </p>
+            <div style={{ padding: '0.875rem', background: 'var(--surface-subtle)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.375rem' }}>
+                <span className="muted">Carrier Line:</span>
+                <span className="bold">{form.carrier_name}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.375rem' }}>
+                <span className="muted">Transit Time:</span>
+                <span className="mono bold">{form.transit_time}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: '0.4375rem', borderTop: '1px solid var(--border-subtle)' }}>
+                <span className="bold">Total Landed Amount:</span>
+                <span className="mono bold" style={{ color: 'var(--text-main)', fontSize: '1.0625rem' }}>
+                  ₹{total.toLocaleString('en-IN')}
+                </span>
+              </div>
+            </div>
+            <p className="small muted">
+              Submitting within the active trigger window will automatically extend the auction clock according to the buyer's anti-sniping rules.
+            </p>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
 }
-
-const inputStyle = {
-    width: '100%',
-    padding: '10px',
-    marginTop: '5px',
-    borderRadius: '6px',
-    border: '1px solid #ccc',
-    fontSize: '14px',
-    boxSizing: 'border-box'
-};
-
-const labelStyle = {
-    display: 'block',
-    marginBottom: '15px',
-    fontWeight: '500'
-};
-
-export default SubmitBid;

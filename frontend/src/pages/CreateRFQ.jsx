@@ -1,207 +1,271 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, CalendarClock, Settings2, ShieldCheck, Compass, Anchor, Info } from 'lucide-react';
 import API from '../api/axios';
 
-function CreateRFQ() {
-    const navigate = useNavigate();
-    const [form, setForm] = useState({
-        name: '',
-        buyer_id: 1,
-        pickup_service_date: '',
-        bid_start_time: '',
-        bid_close_time: '',
-        forced_close_time: '',
-        trigger_window_minutes: 10,
-        extension_duration_minutes: 5,
-        extension_trigger: 'bid_received'
-    });
-    const [error, setError] = useState('');
-    const [loading, setLoading] = useState(false);
+export default function CreateRFQ() {
+  const navigate = useNavigate();
+  const [form, setForm] = useState({
+    name: '',
+    pickup_service_date: '',
+    bid_start_time: '',
+    bid_close_time: '',
+    forced_close_time: '',
+    trigger_window_minutes: 10,
+    extension_duration_minutes: 5,
+    extension_trigger: 'bid_received'
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-    function handleChange(e) {
-        setForm({ ...form, [e.target.name]: e.target.value });
+  function handleChange(e) {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError('');
+    
+    // Date validations
+    if (new Date(form.bid_close_time) <= new Date(form.bid_start_time)) {
+      setError('Bidding closing time must be chronologically after start time.');
+      return;
+    }
+    if (new Date(form.forced_close_time) <= new Date(form.bid_close_time)) {
+      setError('Hard ceiling (forced close) time must be after normal closing time.');
+      return;
     }
 
-    async function handleSubmit(e) {
-        e.preventDefault();
-        setError('');
-        setLoading(true);
-        try {
-            const res = await API.post('/rfqs/create', form);
-            // Auto activate the RFQ
-            await API.post(`/auctions/activate/${res.data.rfq_id}`);
-            alert(`RFQ Created! Reference: ${res.data.reference_id}`);
-            navigate('/');
-        } catch (err) {
-            setError(err.response?.data?.error || 'Something went wrong');
-        } finally {
-            setLoading(false);
-        }
+    setLoading(true);
+    try {
+      await API.post('/rfqs/create', form);
+      navigate('/buyer');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Unable to create RFQ.');
+    } finally {
+      setLoading(false);
     }
+  }
 
-    const inputStyle = {
-        width: '100%',
-        padding: '10px',
-        marginTop: '5px',
-        borderRadius: '6px',
-        border: '1px solid #ccc',
-        fontSize: '14px',
-        boxSizing: 'border-box'
-    };
+  return (
+    <>
+      <div style={{ marginBottom: '1.25rem' }}>
+        <button className="btn ghost sm" onClick={() => navigate('/buyer')}>
+          <ArrowLeft size={16} /> Back to Command Center
+        </button>
+      </div>
 
-    const labelStyle = {
-        display: 'block',
-        marginBottom: '15px',
-        fontWeight: '500'
-    };
-
-    return (
-        <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-            <h2>Create New RFQ</h2>
-
-            {error && (
-                <div style={{
-                    backgroundColor: '#ffe0e0',
-                    color: '#cc0000',
-                    padding: '10px',
-                    borderRadius: '6px',
-                    marginBottom: '15px'
-                }}>
-                    {error}
-                </div>
-            )}
-
-            <form onSubmit={handleSubmit}>
-                <label style={labelStyle}>
-                    RFQ Name
-                    <input
-                        style={inputStyle}
-                        name="name"
-                        value={form.name}
-                        onChange={handleChange}
-                        required
-                        placeholder="e.g. Mumbai to Delhi Freight"
-                    />
-                </label>
-
-                <label style={labelStyle}>
-                    Pickup / Service Date
-                    <input
-                        style={inputStyle}
-                        type="date"
-                        name="pickup_service_date"
-                        value={form.pickup_service_date}
-                        onChange={handleChange}
-                        required
-                    />
-                </label>
-
-                <label style={labelStyle}>
-                    Bid Start Time
-                    <input
-                        style={inputStyle}
-                        type="datetime-local"
-                        name="bid_start_time"
-                        value={form.bid_start_time}
-                        onChange={handleChange}
-                        required
-                    />
-                </label>
-
-                <label style={labelStyle}>
-                    Bid Close Time
-                    <input
-                        style={inputStyle}
-                        type="datetime-local"
-                        name="bid_close_time"
-                        value={form.bid_close_time}
-                        onChange={handleChange}
-                        required
-                    />
-                </label>
-
-                <label style={labelStyle}>
-                    Forced Close Time
-                    <input
-                        style={inputStyle}
-                        type="datetime-local"
-                        name="forced_close_time"
-                        value={form.forced_close_time}
-                        onChange={handleChange}
-                        required
-                    />
-                </label>
-
-                <hr style={{ margin: '20px 0' }} />
-                <h3 style={{ margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '3px' }}>
-  <img
-    width="27"
-    height="27"
-    src="https://img.icons8.com/ios/50/automatic.png"
-    alt="automatic"
-  />
-  Auction Configuration
-</h3>
-
-                <label style={labelStyle}>
-                    Trigger Window (X minutes)
-                    <input
-                        style={inputStyle}
-                        type="number"
-                        name="trigger_window_minutes"
-                        value={form.trigger_window_minutes}
-                        onChange={handleChange}
-                        min="1"
-                        required
-                    />
-                </label>
-
-                <label style={labelStyle}>
-                    Extension Duration (Y minutes)
-                    <input
-                        style={inputStyle}
-                        type="number"
-                        name="extension_duration_minutes"
-                        value={form.extension_duration_minutes}
-                        onChange={handleChange}
-                        min="1"
-                        required
-                    />
-                </label>
-
-                <label style={labelStyle}>
-                    Extension Trigger
-                    <select
-                        style={inputStyle}
-                        name="extension_trigger"
-                        value={form.extension_trigger}
-                        onChange={handleChange}
-                    >
-                        <option value="bid_received">Bid Received in Last X Minutes</option>
-                        <option value="any_rank_change">Any Supplier Rank Change</option>
-                        <option value="l1_rank_change">Lowest Bidder (L1) Rank Change</option>
-                    </select>
-                </label>
-
-                <button
-                    type="submit"
-                    disabled={loading}
-                    style={{
-                        width: '100%',
-                        padding: '12px',
-                        backgroundColor: '#e94560',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: '6px',
-                        fontSize: '16px',
-                        cursor: loading ? 'not-allowed' : 'pointer'
-                    }}
-                >
-                    {loading ? 'Creating...' : 'Create RFQ'}
-                </button>
-            </form>
+      <div className="page-header" style={{ marginBottom: '1.75rem' }}>
+        <div className="page-header-info">
+          <div className="eyebrow">
+            <Anchor size={13} /> New Procurement RFQ
+          </div>
+          <h1>Deploy Freight Auction</h1>
+          <p>Configure trade lane timelines, carrier bidding rules, and automated anti-sniping extension parameters.</p>
         </div>
-    );
-}
+      </div>
 
-export default CreateRFQ;
+      {error && <div className="alert error" style={{ marginBottom: '1.25rem' }}>{error}</div>}
+
+      <div className="grid" style={{ gridTemplateColumns: '1.2fr 0.8fr', gap: '1.75rem', alignItems: 'start' }}>
+        <form className="form" onSubmit={handleSubmit}>
+          
+          {/* Card 1: Shipment & Route */}
+          <div className="card">
+            <div className="card-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Compass size={16} color="var(--text-main)" /> 
+                <span>Trade Lane & Service Parameters</span>
+              </h3>
+            </div>
+            
+            <div className="grid grid-2">
+              <div className="field" style={{ gridColumn: 'span 2' }}>
+                <label>Trade Lane / RFQ Title</label>
+                <input 
+                  name="name" 
+                  value={form.name} 
+                  onChange={handleChange} 
+                  required 
+                  placeholder="e.g., Nhava Sheva (INNSA) to Hamburg (DEHAM) - 40ft FCL High Cube" 
+                />
+                <span className="field-hint">Specify origin, destination port, and container equipment type.</span>
+              </div>
+              
+              <div className="field">
+                <label>Target Pickup / Service Date</label>
+                <input 
+                  type="date" 
+                  name="pickup_service_date" 
+                  value={form.pickup_service_date} 
+                  onChange={handleChange} 
+                  required 
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2: Bidding Window Timeline */}
+          <div className="card">
+            <div className="card-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <CalendarClock size={16} color="var(--text-main)" /> 
+                <span>Auction Window & Schedule</span>
+              </h3>
+            </div>
+            
+            <div className="grid grid-2">
+              <div className="field">
+                <label>Bidding Start Time</label>
+                <input 
+                  type="datetime-local" 
+                  name="bid_start_time" 
+                  value={form.bid_start_time} 
+                  onChange={handleChange} 
+                  required 
+                />
+              </div>
+
+              <div className="field">
+                <label>Scheduled Close Time</label>
+                <input 
+                  type="datetime-local" 
+                  name="bid_close_time" 
+                  value={form.bid_close_time} 
+                  onChange={handleChange} 
+                  required 
+                />
+              </div>
+
+              <div className="field" style={{ gridColumn: 'span 2' }}>
+                <label>Hard Stop Forced Close Ceiling</label>
+                <input 
+                  type="datetime-local" 
+                  name="forced_close_time" 
+                  value={form.forced_close_time} 
+                  onChange={handleChange} 
+                  required 
+                />
+                <span className="field-hint">Absolute deadline beyond which dynamic extensions cannot expand.</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 3: Anti-Sniping Rules */}
+          <div className="card">
+            <div className="card-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Settings2 size={16} color="var(--text-main)" /> 
+                <span>Dynamic Anti-Sniping Engine</span>
+              </h3>
+            </div>
+            
+            <div className="grid grid-2">
+              <div className="field">
+                <label>Trigger Window (Minutes)</label>
+                <input 
+                  type="number" 
+                  name="trigger_window_minutes" 
+                  value={form.trigger_window_minutes} 
+                  onChange={handleChange} 
+                  required 
+                  min="1" 
+                  max="60" 
+                />
+                <span className="field-hint">Minutes before close to monitor for late bids.</span>
+              </div>
+
+              <div className="field">
+                <label>Extension Length (Minutes)</label>
+                <input 
+                  type="number" 
+                  name="extension_duration_minutes" 
+                  value={form.extension_duration_minutes} 
+                  onChange={handleChange} 
+                  required 
+                  min="1" 
+                  max="60" 
+                />
+                <span className="field-hint">Time added when a sniper bid is detected.</span>
+              </div>
+
+              <div className="field" style={{ gridColumn: 'span 2' }}>
+                <label>Extension Condition</label>
+                <select 
+                  name="extension_trigger" 
+                  value={form.extension_trigger} 
+                  onChange={handleChange}
+                >
+                  <option value="bid_received">Any Valid Bid Received in Trigger Window</option>
+                  <option value="new_lowest_bid">Only When a New L1 (Lowest) Bid is Set</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+            <button className="btn" type="submit" disabled={loading} style={{ minWidth: '160px' }}>
+              {loading ? 'Deploying Auction...' : 'Deploy Freight Auction'}
+            </button>
+            <button className="btn secondary" type="button" onClick={() => navigate('/buyer')}>
+              Cancel
+            </button>
+          </div>
+        </form>
+
+        {/* Right Rail: Auction Execution Summary Preview */}
+        <div style={{ position: 'sticky', top: '1.5rem' }}>
+          <div className="card" style={{ background: 'var(--surface)' }}>
+            <div className="card-header">
+              <h3>Auction Lifecycle Preview</h3>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.8125rem' }}>
+              <div style={{ display: 'flex', gap: '0.625rem', alignItems: 'flex-start' }}>
+                <div className="stat-icon-wrapper" style={{ width: '2rem', height: '2rem', flexShrink: 0 }}>
+                  <ShieldCheck size={14} color="var(--text-main)" />
+                </div>
+                <div>
+                  <span className="bold" style={{ color: 'var(--text-main)', display: 'block' }}>
+                    Competitive Liquidity Protection
+                  </span>
+                  <span className="muted">
+                    If any quote is received within the final <strong>{form.trigger_window_minutes || 10} minutes</strong>, the clock automatically adds <strong>+{form.extension_duration_minutes || 5} minutes</strong>.
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.875rem' }}>
+                <div className="stat-label" style={{ marginBottom: '0.5rem' }}>Summary Specs</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span className="muted">Route Description:</span>
+                    <span className="bold" style={{ maxWidth: '170px', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {form.name || 'Untitled Route'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span className="muted">Target Pickup:</span>
+                    <span className="mono bold">{form.pickup_service_date || 'Not set'}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span className="muted">Auction Mode:</span>
+                    <span className="badge active" style={{ fontSize: '0.625rem' }}>Timed Reverse</span>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ padding: '0.625rem 0.75rem', background: 'var(--surface-subtle)', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border)' }}>
+                <div className="small muted" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <Info size={14} color="var(--text-muted)" />
+                  Carriers will receive instant push updates over WebSocket upon auction launch.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </>
+  );
+}
